@@ -2,8 +2,8 @@
 #include <WiFiClientSecure.h>
 #include "SSD1306Wire.h"
 
-const char* wifiSSID = "KANJIKLUB";
-const char* wifiPassword = "HANS010!";
+const char* wifiSSID = "SECRET_SSID";
+const char* wifiPassword = "SECRET_PASSWORD";
 
 const int wxPort = 443;
 const char* wxHostName = "api.weather.gov";
