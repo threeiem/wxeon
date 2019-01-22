@@ -1,58 +1,208 @@
-/*
- MIT License
- Copyright (c) 2018 Ove Nystås
- Permission is hereby granted, free of charge, to any person obtaining a copy
- of this software and associated documentation files (the "Software"), to deal
- in the Software without restriction, including without limitation the rights
- to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- copies of the Software, and to permit persons to whom the Software is
- furnished to do so, subject to the following conditions:
- The above copyright notice and this permission notice shall be included in all
- copies or substantial portions of the Software.
- THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- SOFTWARE.
- */
-
-#include <Adafruit_DotStar.h>
+#include <ESP8266WiFi.h>
+#include <WiFiClientSecure.h>
 #include "SSD1306Wire.h"
 
-#define NUMPIXELS 60 // Number of LEDs in strip
+const char* wifiSSID = "KANJIKLUB";
+const char* wifiPassword = "HANS010!";
 
-// Here's how to control the LEDs from any two pins:
-#define DATAPIN    4
-#define CLOCKPIN   5
+const int wxPort = 443;
+const char* wxHostName = "api.weather.gov";
+const char wxHostFingerprint[] PROGMEM = "72 4C 3E FE 14 F0 30 2F BA 39 3E 1F AD 21 C1 9D 5D A0 70 3E";
+const char* wxRequestCurrent = "/stations/KAVL/observations/current";
+String wxCurrent = "";
+const int wxLoopOffsetMax = 1000;
 
-Adafruit_DotStar strip = Adafruit_DotStar(NUMPIXELS, DATAPIN, CLOCKPIN, DOTSTAR_BRG);
-// The last parameter is optional -- this is the color data order of the
-// DotStar strip, which has changed over time in different production runs.
-// Your code just uses R,G,B colors, the library then reassigns as needed.
-// Default is DOTSTAR_BRG, so change this if you have an earlier strip.
+String httpRequest = "";
+String httpRequestLine = "";
 
-// Hardware SPI is a little faster, but must be wired to specific pins
-// (Arduino Uno = pin 11 for data, 13 for clock, other boards are different).
-//Adafruit_DotStar strip = Adafruit_DotStar(NUMPIXELS, DOTSTAR_BRG);
-
-
-int head = 0;
-int tail = -10; // Index of first 'on' and 'off' pixels
-
-uint32_t color = 0xFF0000; // 'On' color (starts red)
-
+WiFiServer server(80);
+WiFiClient httpClient;
+WiFiClientSecure httpsClient;
 
 void setup() {
-  // Initialize digital pin LED_BUILTIN as an output.
-  pinMode(LED_BUILTIN, OUTPUT);
+  serialInit();
+  builtinLEDInit();
+  wifiConnect();
+  setWxCurrent();
 }
 
 void loop() {
-  digitalWrite(LED_BUILTIN, HIGH);
-  delay(1000);
 
-  digitalWrite(LED_BUILTIN, LOW);
-  delay(1000);
+  httpClient = server.available();
+  int wxLoopOffset = 0;
+
+  builtinBlink();
+
+  if (httpClient.connected()) {
+
+    httpRequestLine = "";
+    char inputCharacter;
+
+    Serial.println("Client Connected");
+    
+    while (httpClient.connected() && httpClient.available()) {
+
+      inputCharacter = httpClient.read();
+      httpRequest += inputCharacter;      
+
+      if (inputCharacter == '\n') {
+          
+        if (httpRequestLine.length() == 0) {
+
+          digitalWrite(LED_BUILTIN, HIGH);
+          delay(100); 
+          httpConnect(httpClient);
+          htmlHead(httpClient);
+          htmlBody(httpClient, "I'm too weak to put anything good.");
+          htmlBody(httpClient, wxCurrent);
+          htmlTail(httpClient);
+          digitalWrite(LED_BUILTIN, LOW);
+          break;
+
+        } else {
+          
+          httpRequestLine = "";
+
+        }
+
+        builtinBlink(18);
+
+      } else if (inputCharacter != '\r') {
+
+        httpRequestLine += inputCharacter;
+
+      } else {
+        ;
+      }
+    }   
+  }
+
+  Serial.print(httpRequest);
+  httpRequest = "";
+  httpClient.stop(); 
+
+  if (wxLoopOffset <= wxLoopOffsetMax) {
+    wxLoopOffset +=1;
+  } else {
+    wxLoopOffset = 0;
+    setWxCurrent();
+  }
+    
 }
+
+void setWxCurrent() {
+
+  int maxTries = 5;
+
+  httpsClient.setFingerprint(wxHostFingerprint);
+
+  for (int i = 1; i <= maxTries; i++) {
+
+    if (httpsClient.connect(wxHostName, wxPort) == false) {
+
+      Serial.println(String("setWxCurrent(): Failed to connect httpsClient") + httpsClient.status());
+            
+      if (i == maxTries) {
+        Serial.println("setWxCurrent(): Maximum number of tries to connections failed.");
+        Serial.println("setWxCurrent(): Aborting.");
+        return;
+      }
+
+      builtinBlink(1000);
+      
+    } else {
+
+      httpsClient.print(String("GET ") + wxRequestCurrent + " HTTP/1.1\r\n" +
+        "Host: " + wxHostName + "\r\n" +
+        "Content-Type: text/html; charset=utf-8\r\n" +
+        "Access-Control-Max-Age: 10\r\n" + 
+        "User-Agent: WXeon ESP8266\r\n" +
+        "Connection: close\r\n\r\n");
+        
+      builtinBlink();
+      
+      if (httpsClient.connected()) {
+        wxCurrent = httpsClient.readString();
+      }
+    }
+  }
+
+
+
+  if (wxCurrent == "") {
+    Serial.println(String("FAILED:") + wxHostName + ":" + wxRequestCurrent);
+  } else {
+    Serial.println(wxCurrent);
+  }
+}
+
+void htmlBody(WiFiClient c, String content) {
+  c.println(content);
+}
+
+void htmlBody(WiFiClient c, int content) {
+  c.println(content);
+}
+
+void htmlHead(WiFiClient c) {
+  c.println("<!DOCTYPE html><html><head>");
+  c.println("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
+  c.println("<link rel='icon' href='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAS0lEQVR42s2SMQ4AIAjE+P+ncSYdasgNXMJgcyIIlVKPIKdvioAXyWBeJmVpqRZKWtj9QWAKZyWll50b8IcL9JUeQF50n28ckyb0ADG8RLwp05YBAAAAAElFTkSuQmCC' type='image/x-png' />");
+  c.println("</head><body>");
+  c.println("<h1>WXeon</h1>");
+}
+
+void htmlTail(WiFiClient c) {
+  c.println("</body></html>");
+  c.println();
+}
+
+void httpConnect(WiFiClient c) {
+  builtinBlink();
+  c.println("HTTP/1.1 200 OK");
+  c.println("Content-type:text/html");
+  c.println("Connection: close");
+  c.println();
+}
+
+void wifiConnect() {
+
+  Serial.print(wifiSSID);
+  Serial.print(": ");
+
+  WiFi.begin(wifiSSID, wifiPassword);
+
+  builtinBlink();
+
+  while (WiFi.status() != WL_CONNECTED)
+  {
+    builtinBlink(500);
+  }
+
+  server.begin();
+  delay(9900);
+
+  Serial.println(WiFi.localIP());
+}
+
+void builtinBlink() {
+  digitalWrite(LED_BUILTIN, HIGH);
+  delay(100); 
+  digitalWrite(LED_BUILTIN, LOW);
+}
+
+void builtinBlink(int millisecond) {
+  digitalWrite(LED_BUILTIN, HIGH);
+  delay(millisecond); 
+  digitalWrite(LED_BUILTIN, LOW);
+}
+
+void builtinLEDInit() {
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, LOW);
+}
+
+void serialInit() {
+    Serial.begin(115200);
+    Serial.println("\n\n\n\n\n\n\n\n\n\n");
+} 
